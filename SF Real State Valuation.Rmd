@@ -1,0 +1,232 @@
+---
+title: 'SF: Real State Valuation'
+author: "Team 4"
+date: "14 October 2020"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(ggplot2)
+library(knitr)
+library(dplyr)
+library(tidyverse)
+library(summarytools)
+library(visdat)
+library(igraph)
+#library(treemap)
+#library(dplyr)
+library(devtools)
+library("readxl")
+library(repr)
+setwd("./RScripts/")
+```
+
+## Questions:
+
+### 1. Develop the best regression model you can for predicting the price of houses
+
+```{r}
+# Read Excel data of Real State from San Francisco
+houses_df <- read_excel("Data/ADFC-0006-E.xlsx", sheet="data")
+
+#make dummy variables for Neighborhood (Low, Medium, High)
+houses_df$Medium <- 1L * (houses_df$Neighborhood == 'Medium')
+houses_df$Low <- 1L * (houses_df$Neighborhood == 'Low')
+
+# Create a continous variable from Years to consider Age of the Building
+houses_df$Age <-as.numeric(format(houses_df$`Date Listed`,'%Y'))  - houses_df$Year
+
+# Binarization of Zip Codes
+for(i in unique(houses_df$`Zip Code`)) {
+  houses_df[[paste0("zc_",i)]] <- ifelse(houses_df$`Zip Code`==i,1,0)
+}
+
+
+```
+
+### 2 - Explain what you have done and why in a brief and clear way, reporting the regression equation and a measure of the goodness of fit 
+
+ 
+
+#### Modification of data
+
+-	Drop variables ID and Address – not relevant for regression model
+
+-	Drop variable "Date listed", since "Days listed" contain all the necessary information.
+
+-	Drop variable Loft - multicollinearity with bedrooms. A 0-bedroom apartment is equal to a loft.
+
+-	Binarize variable zip code – to take into consideration the effect of Zip Codes as a Categorical Variable. Therefore we binarize ZIP code and create n-1 dummy variables .
+
+-	Binarize variable Neighborhood  - so the variable can be incl. within the regression. We thought about asociating the numbers 0, 1 and 2 (as to represent a linearity between low, medium and high), but this did not improve the model (no higher R2)
+
+-	Translated Year into age and ran each age as a variable to increase quality of the model fit using more independent variables 
+
+
+-	We calculated the correlation matrix to understand the relationship of the continous variables with the price and evaluate possible Multicollinearity.
+
+```{r}
+cor(dplyr::select(houses_df, Price, `Square feet`,Lotsize,Bedrooms,Year, `Days listed`))
+```
+
+- We decided to use the Zip Codes and the Neighborhood as Categories since some of the Categories seem to be relevant on the Price prediction.
+- The variable Bedrooms didn't seem to be relevant but since the effect on the Price was explicitly asked we decided to include it.
+
+```{r}
+mod <- lm(Price~ `Square feet`+ zc_94110+zc_94112+zc_94114+zc_94116+zc_94117+zc_94122+zc_94131+zc_94132+zc_94118+zc_94107+zc_94133+zc_94134+zc_94124+zc_94115+zc_94123+zc_94109+zc_94102+zc_94121+zc_94103+zc_94108+zc_94111+zc_94100 + `Days listed`+   Age + Bedrooms + Lotsize + Medium + Low  , data=houses_df)
+
+#mod <- lm(Price~ `Square feet`+ `Days listed`+   Age + Bedrooms + Lotsize + Medium + Low  , data=houses_df)
+#mod <- lm(Price~ `Square feet`+ as.factor(`Zip Code`)+ `Days listed`+   Age + Bedrooms + Lotsize + Medium + Low  , data=houses_df)
+
+summary(mod)
+```
+
+
+
+```{r}
+# Predict values based on model and calculate Residuals
+
+houses_df$pred <- predict(mod)
+houses_df$resid <- houses_df$Price - houses_df$pred
+
+# Calculate Expected Return of Real State
+houses_df$ExpRet <- round(-houses_df$resid / houses_df$Price,2)
+
+```
+In the QQPlot of Residuals we can see visually the fitness of the model to the Data:
+
+```{r warning=FALSE, echo=FALSE}
+plot(mod, which=2, col=c("red"))
+
+```
+
+
+Looking at the distribution of the residuals, it seems to have a Guassian distribution but also long tails which might limit the accuracy of the modeland increase the standard error of the Price. 
+
+```{r echo=FALSE}
+p <- ggplot(mod, aes(mod$resid))
+p <- p + geom_histogram(aes(y=..density..), binwidth = 100000, fill = "brown", color="grey40",alpha= 0.3) 
+p <- p + geom_density()
+p
+```
+
+We selected the Top 10 investments based on the highest negative Spread (Residual)
+
+```{r}
+select(head(houses_df[with(houses_df,order(resid)), ],10),ID:`Zip Code`,Price,pred,resid,ExpRet)
+
+
+```
+
+Graphically, we can see the Top 10 investments selected by the model:
+
+```{r echo=FALSE}
+library("ggrepel")
+#install.packages("ggrepel")
+
+ID_labels <- head(houses_df[with(houses_df,order(resid)), ],10)[["ID"]]
+p <- ggplot(houses_df, aes(Price,pred,color=Neighborhood))
+p <- p + geom_point(size=2)
+p <- p + geom_text_repel(aes(label = ID),
+            color = "gray20",
+            size = 5,
+            data = filter(houses_df, ID %in% ID_labels))
+p <- p + geom_line(aes(Price,Price), color = "black")
+my.formula <- y ~ x
+p <- p + geom_smooth(method="lm", formula = my.formula, se=TRUE, color="brown", size=0.6)
+
+p
+```
+
+The model underestimates the value of the Real State and it can be seen than the model is highly influenced by Outliers in the Data.
+
+95% Confidence interval of Price Predictions:
+
+```{r warning=FALSE}
+# Extract confidence interval of predictions
+
+pred <- predict(mod, interval="prediction")
+investMat <- pred[ID_labels,]
+invest <- as.data.frame.matrix(investMat)
+
+# Top 10 Investments Dataframe
+Investment <- data.frame(ID=ID_labels)
+Investment$pred_lwr <- invest$lwr
+Investment$pred_avg <- invest$fit
+Investment$pred_upr <- invest$upr
+
+# Extract Prices from Original Dataframe
+prices <- filter(houses_df,ID %in% ID_labels)
+Investment$price <- prices[with(prices,order(resid)),]$Price
+# Calculate Absolute Return interval
+Investment$min_Return <- Investment$pred_lwr - Investment$price
+Investment$avg_Return <- Investment$pred_avg - Investment$price
+Investment$max_Return <- Investment$pred_upr - Investment$price
+ 
+Investment[1:3,]
+```
+
+The Model has limitations due to Outliers on the Data and the Number of Data points in some of the categories considered (i.e. Zip Code)
+
+### 3 - According to the sample used and your model, what is the most important single factor explaining real estate prices in San Francisco?
+
+The most important single factor is **Square feet** which can be recognized on the correlation matrix where the correlation seems the highest relative to the other variables. 
+ Cor(Price, Square feet) = 0.4654 
+
+
+
+### 4 - If you were planning to sell your house, what would be the expected market price increase of building (before the sale) an additional bedroom in your property?
+
+Using the coefficient from our model we have identified that every additional bedroom expected increase in price amounts to $ 15,180 per additional Bedroom although the coefficient in the model doesn't seem to be completely relevant.
+
+### 5 - What are the top 3 investment opportunities in this market according to your model?
+
+According to the model the investments which would yield a higher return with a Budget constraint of 7 million dollars would be:
+```{r}
+select(head(houses_df[with(houses_df,order(resid)), ],3),ID:`Zip Code`,Price,pred,resid,ExpRet)
+```
+
+Considering the Confidence Intervals of the Investments:
+
+```{r}
+head(Investment,3)
+```
+
+### 6 - What are the limitations of the model?
+
+After trying different approaches we realized that the model has many limitations and that they should be taken into consideration when making decisions.
+
+-	We realized that the standard error was relatively high. In order to improve the model we decided to drop outliers (price > €4m), we assumed those outliers were worsing our model due to the lack of data points for higher price brackets. The Standard error dropped but the model suggested different investments and changed the confidence intervals drastically.
+
+- 	The Model is only a multi-linear regression model: Non-linear relationships not explored (e.g. exponential) between independent and dependent variable, e.g. Year and square feet
+- 	As with every model, the quality of the prediction is highly dependent on the quality and the availability of the underlying data. Some of the Zip Code categories where limited in the number of data points which limited the relevance of some of the Zip codes in the model.
+
+- 	The changing predictions of the model and the selection of the best investments based on the residual of the model and ROI have exposed some of the potential limitations of the model and the data at hand.
+
+- All three investments with the highest expected upside are loft-type apartments built in the first half of the 20th century. The positive correlation of building age and price is expressed by regression coefficient which implies that every additional year adds $2,063 to the listing price.  At the same time, there is no variable in the data that could indicate the building state and the additional capital expenditure required for renovations. While renovated historical houses might definitely attract attention of potential buyers, they can also be in a ruin condition which would justify low prices.
+
+- On top of that, there is no market information about the demand for lofts and if it is low then cashing in on the profit from property resale can be much more difficult to achieve.
+
+- Additionally, out of the selected investments, two are listed for over 320 days, 14% above the average of the population. The model positively correlates count of the day the listing is posted with the price which indicates that higher priced properties are less liquid and take longer to find buyers. Choosing the investments based on the highest expected upside, we are as well choosing the less liquid listings.
+
+- Omitted variables: The model does not consider some of the financial aspects of the property ownership that are required at the time of decision making such as – maintenance cost, transaction costs, local council taxes, property taxes, layout, height, parking spaces, amenities, design etc. Some of the aforementioned aspects can have a decisive influence on the buyer and also impact future possibilities for resale.
+
+```{r echo=FALSE}
+flexdashboard::gauge(7, min = 0, max = 10, flexdashboard::gaugeSectors(
+  success = c(0, 2), warning = c(3, 6), danger = c(7, 10)
+))
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
